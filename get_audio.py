@@ -2,11 +2,12 @@ import subprocess
 import streamlink
 
 # URL трансляции Twitch
-url = "https://www.twitch.tv/tornadollars"
+url = "https://www.twitch.tv/poisonalixir"
 
 # Получаем список доступных потоков со стрима
 streams = streamlink.streams(url)
-
+print(streams)
+input()
 # Выбираем наиболее подходящий по качеству поток
 best = streams["audio_only"]
 

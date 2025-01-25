@@ -12,12 +12,13 @@ from selenium_authenticated_proxy import SeleniumAuthenticatedProxy
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+from playwright.sync_api import sync_playwright
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 import time
 
 class DeadNetManager:
     def __init__(self):
-        self.debug = False
+        self.debug = True
 
         self.proxies = [
             '45.153.74.241:11104:zbhTPqNA2H:dHOqkDaYhB',
@@ -35,7 +36,6 @@ class DeadNetManager:
 
         self.console = Console()
         self.greeting()
-        self.driver = self.setup_driver()
         self.use_proxy = self.use_proxy_choice()
         self.current_proxy_service = self.proxy_service_choice()
         self.viewers_count = self.viewers_count_choice()
@@ -46,79 +46,70 @@ class DeadNetManager:
         self.console.print(ascii_art, justify="center", style='bold red', highlight=False)
         print('Примерное кпд - 50%(на ластовом сервисе)')
 
-    def setup_driver(self):
-        chrome_options = Options()
-        chrome_options.add_argument("--window-size=1920,1080")  # на серваке оставить вместе с хедлесс
-        if(not self.debug):
-            chrome_options.add_argument("--headless")  # на серваке оставить вместе с хедлесс
-        chrome_options.add_argument(
-            "start-maximized")  # Это раскомментировать при необходимости(тоже чтоб не делало мозг)
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-        if(self.use_proxy):
-            proxy = self.get_random_proxy()
-            proxy_helper = SeleniumAuthenticatedProxy(proxy_url=proxy)
-            proxy_helper.enrich_chrome_options(chrome_options)
-
-        chrome_options.add_argument(
-            "--disable-blink-features=AutomationControlled")  # Нужно чтобы сайты типа днс не делали мозг
-
-        extension_path = 'adblock.crx'
-        chrome_options.add_extension(extension_path)
-        chrome_options.add_argument("--mute-audio")
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-        driver.set_window_position(-2000, 0)
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument",
-                               {  # Нужно чтобы сайты типа днс не делали мозг
-                                   'source': '''
-                            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-                            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-                            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
-                      '''
-                               })
-        return driver
-
     def setup_viewers(self):
-        self.driver.get(self.current_proxy_service)
+        with sync_playwright() as p:
+            browser_options = [
+                "--headless",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--no-first-run",
+                "--disable-blink-features=AutomationControlled",
+                "--mute-audio",
+                "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+                "--force-webrtc-ip-handling-policy",
+            ]
 
-        with Progress(SpinnerColumn(), BarColumn(), TextColumn("[progress.description]{task.description}")) as progress:
-            # Добавляем задачу в прогресс-бар
-            task = progress.add_task("Сетап зрителей...", total=self.viewers_count)
+            with Progress(SpinnerColumn(), BarColumn(), TextColumn("[progress.description]{task.description}")) as progress:
+                task = progress.add_task("Сетап зрителей...", total=self.viewers_count)
 
-            # Имитация выполнения задачи
-            while not progress.finished:
-                if(self.current_proxy_service != 'https://blockawayproxy.net/'):
-                    self.driver.execute_script("window.open('" + self.current_proxy_service + "')")
-                    self.driver.switch_to.window(self.driver.window_handles[-1])
-                    id = 'url'
-                else:
-                    id = 'unique-form-control'
-                    self.driver.get(self.current_proxy_service)
+                for _ in range(self.viewers_count):
+                    # Запуск нового браузера с уникальным прокси
+                    proxy = self.get_random_proxy() if self.use_proxy else None
+                    browser = p.chromium.launch(
+                        channel="chrome",
+                        headless=False,
+                        args=browser_options
+                    )
 
-                # text_box = self.driver.find_element(By.ID, 'url')
-                text_box = WebDriverWait(self.driver, 10).until(
-                    EC.visibility_of_element_located((By.ID, id))
-                )
-                try:
-                    text_box.send_keys(f'www.twitch.tv/{self.twitch_username}')
-                except:
-                    access_button = self.driver.find_element(By.CLASS_NAME, "fc-cta-consent")
-                    access_button.click()
-                    time.sleep(2)
-                    text_box.send_keys(f'www.twitch.tv/{self.twitch_username}')
+                    context = browser.new_context(
+                        viewport={"width": 1920, "height": 1080},
+                        proxy={"server": proxy} if proxy else None
+                    )
+                    page = context.new_page()
 
-                text_box.send_keys(Keys.RETURN)
-                # time.sleep(1)
-                for handle in self.driver.window_handles:
-                    self.driver.switch_to.window(handle)  # Переключаемся на вкладку
-                progress.update(task, advance=1)  # Обновляем прогресс
+                    # Удаление автоматизации
+                    page.evaluate('''() => {
+                        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+                        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+                        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+                    }''')
 
-        # Переключаемся между вкладками и получаем домены
-        while True:
-            for handle in self.driver.window_handles:
-                self.driver.switch_to.window(handle)  # Переключаемся на вкладку
-            time.sleep(30)
+                    page.goto(f'www.twitch.tv/{self.twitch_username}')
+
+                    # # Заполнение поля URL
+                    # id = 'url' if self.current_proxy_service != 'https://blockawayproxy.net/' else 'unique-form-control'
+                    # text_box = page.locator(f'#{id}')
+                    #
+                    # try:
+                    #     text_box.fill()
+                    # except:
+                    #     access_button = page.locator(".fc-cta-consent")
+                    #     access_button.click()
+                    #     time.sleep(2)
+                    #     text_box.fill(f'www.twitch.tv/{self.twitch_username}')
+                    #
+                    # text_box.press('Enter')
+                    progress.update(task, advance=1)  # Обновляем прогресс
+
+                    # Ожидание, чтобы браузер не закрывался сразу
+                    time.sleep(5)  # Замените на нужное время ожидания
+
+            # Переключение между вкладками (если нужно)
+            # Этот код можно добавить, если вам нужно переключаться между вкладками
+            # while True:
+            #     for new_page in browser.contexts[0].pages:
+            #         new_page.bring_to_front()  # Переключаемся на вкладку
+            #     time.sleep(30)
 
     def get_random_proxy(self):
         proxy = random.choice(self.proxies).split(':')
@@ -184,4 +175,3 @@ class DeadNetManager:
 
 if __name__ == "__main__":
     manager = DeadNetManager()
-
